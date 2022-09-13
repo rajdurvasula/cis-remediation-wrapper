@@ -1,0 +1,12 @@
+{
+    "Time": "datetime.now()",
+    "Source": "SHEnabler",
+    "Resources": [ "context.invoked_function_arn" ],
+    "DetailType": "SecurityHub Enabled Event",
+    "Detail": {
+        "member_account": "172489758104",
+        "member_email": "sh@sh.com",
+        "s3_bucket": "sh-172489758104-ops",
+        "cfn_template": "cis-benchmark-remediation.yaml"
+    }
+}

@@ -1,0 +1,12 @@
+{
+    "org_id": "o-a4tlobvmc0",
+    "assume_role": "AWSControlTowerExecution",
+    "master_account": "538857479523",
+    "home_region": "us-east-1",
+    "master_bucket": "org-sh-ops",
+    "member_account": "172489758104",
+    "member_email": "bhupesh.gupta@org.com",
+    "sh_admin_account": "413157014023",
+    "member_bucket": "sh-ops-172489758104",
+    "cfn_template_name": "cis-benchmark-remediation.yaml"
+}

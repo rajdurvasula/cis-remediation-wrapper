@@ -1,0 +1,492 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Template setup SecurityHub Remediation Event Alarms on Member Accounts
+Metadata:
+  AWS::CloudFormation::Interface:
+    - ParameterGroups:
+      - Label:
+          default: Organization Information
+        Parameters:
+          - OrganizationId
+      - Label:
+          default: Control Tower Information
+        Parameters:
+          - HomeRegion        
+          - SecurityAccountId
+          - RoleToAssume
+    - ParameterGroups:
+      - Label:
+          default: Code Source
+        Parameters:
+          - S3SourceBucket
+          - S3SourceKey1
+          - S3SourceKey2
+          - S3SourceKey3      
+          - S3SourceKey4
+          - StateMachine
+          - RemediationTemplate
+    - ParameterGroups:
+      - Label:
+          default: Member Account Information
+        Parameters:
+          - MemberAccountId
+          - MemberEmail
+          - S3TargetBucket
+    - ParameterGroups:
+      - Label:
+          default: Event Information
+        Parameters:
+          - EventBus
+Parameters:
+  OrganizationId:
+    Type: String
+    Description: AWS Organizations ID for the Control Tower
+    AllowedPattern: '^[o][\-][a-z0-9]{10}$'
+    ConstraintDescription: The Org Id must be a 12 character string starting with o- and followed by 10 lower case alphanumeric characters
+    MinLength: 12
+    MaxLength: 12
+    Default: 'o-a4tlobvmc0'
+  HomeRegion:
+    Type: String
+    Description: Control Tower Home Region
+    Default: 'us-east-1'
+  SecurityAccountId:
+    Type: String
+    Description: Which account will be the SecurityHub Admin account? Enter Account ID
+    AllowedPattern: '^[0-9]{12}$'
+    ConstraintDescription: The Security Account ID must be a 12 character string.
+    MinLength: 12
+    MaxLength: 12
+    Default: 413157014023
+  MemberAccountId:
+    Type: String
+    Description: Member Account ID
+    AllowedPattern: '^[0-9]{12}$'
+    ConstraintDescription: The Member Account ID must be a 12 character string.
+    MinLength: 12
+    MaxLength: 12
+    Default: 172489758104
+  MemberEmail:
+    Type: String
+    Description: Member Account Email Address
+    Default: 'sh@sh.com'
+  RoleToAssume:
+    Type: String
+    Description: IAM role to be assumed in child accounts to enable SecurityHub. The default is AWSControlTowerExecution
+    Default: AWSControlTowerExecution
+  S3SourceBucket:
+    Type: String
+    Description: S3 bucket containing source code
+    Default: 'org-sh-ops'
+  S3SourceKey1:
+    Type: String
+    Description: S3 object key for template copier lambda
+    Default: 'sh_ops_bucket.zip'
+  S3SourceKey2:
+    Type: String
+    Description: S3 object key for securityhub remediation lambda
+    Default: 'sh_remediator.zip'
+  S3SourceKey3:
+    Type: String
+    Description: S3 object key for securityhub remediation statemachine launcher
+    Default: 'sh_remediator_sm_launcher.zip'
+  S3SourceKey4:
+    Type: String
+    Description: S3 object key for statemachine
+    Default: 'sh-remediation-sm.json'
+  S3TargetBucket:
+    Type: String
+    Description: S3 bucket on Member Account
+    Default: 'sh-ops-172489758104'
+  StateMachine:
+    Type: String
+    Description: SecurityHub Enabler StateMachine name
+    Default: 'SHRemediatorSM'    
+  RemediationTemplate:
+    Type: String
+    Description: SecurityHub Remediation CFN Template
+    Default: 'cis-benchmark-remediation.yaml'
+  EventBus:
+    Type: String
+    Description: Event Bus Name
+    Default: 'sh-event-bus'
+Resources:
+  SHOpsBucketCopierRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: '/'
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+      Policies:
+        - PolicyName: SHOpsBucketCopierPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - organizations:ListAccounts
+                  - organizations:DescribeAccount
+                  - organizations:ListPoliciesForTarget
+                  - organizations:ListParents
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'aws:PrincipalOrgId': !Ref OrganizationId
+              - Effect: Allow
+                Action:
+                  - organizations:DescribeOrganizationalUnit
+                Resource:
+                  - !Sub 'arn:aws:organizations::${AWS::AccountId}:ou/${OrganizationId}/ou-*'
+              - Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource:
+                  - !Sub 'arn:aws:iam::*:role/${RoleToAssume}'
+                Condition:
+                  StringEquals:
+                    'aws:PrincipalOrgId': !Ref OrganizationId
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*'
+              - Effect: Allow
+                Action:
+                  - 'CloudFormation:ListStackInstances'
+                Resource:
+                  - !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stackset/AWSControlTowerBP-BASELINE-CLOUDWATCH:*'
+              - Effect: Allow
+                Action:
+                  - 'iam:CreateServiceLinkedRole'
+                  - 'ec2:describeRegions'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 's3:ListBucket'
+                  - 's3:GetObject'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${S3SourceBucket}'
+                  - !Sub 'arn:aws:s3:::${S3SourceBucket}/*'
+              - Effect: Allow
+                Action:
+                  - 's3:CreateBucket'
+                  - 's3:DeleteBucket'
+                  - 's3:DeleteObject'
+                  - 's3:ListBucket'
+                  - 's3:PutObject'
+                  - 's3:PubObjectAcl'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${S3TargetBucket}*'
+                  - !Sub 'arn:aws:s3:::${S3TargetBucket}*/*'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: 'Organizations does not have arns, so we have to use an asterisk in the policy'
+  SHOpsBucketCopierLambda:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - SHOpsBucketCopierRole
+    Properties:
+      FunctionName: SHOpsBucketCopier
+      Handler: 'sh_ops_bucket.lambda_handler'
+      Role: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${SHOpsBucketCopierRole}'
+      Code:
+        S3Bucket: !Ref S3SourceBucket
+        S3Key: !Ref S3SourceKey1
+      Runtime: python3.9
+      MemorySize: 512
+      Timeout: 900
+      Environment:
+        Variables:
+          log_level: INFO
+  SHRemediatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: '/'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AWSCloudFormationFullAccess'
+        - 'arn:aws:iam::aws:policy/CloudWatchFullAccess'
+        - 'arn:aws:iam::aws:policy/AmazonSNSFullAccess'
+        - "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+      Policies:
+        - PolicyName: SHRemediatorPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - organizations:ListAccounts
+                  - organizations:DescribeAccount
+                  - organizations:ListPoliciesForTarget
+                  - organizations:ListParents
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'aws:PrincipalOrgId': !Ref OrganizationId
+              - Effect: Allow
+                Action:
+                  - organizations:DescribeOrganizationalUnit
+                Resource:
+                  - !Sub 'arn:aws:organizations::${AWS::AccountId}:ou/${OrganizationId}/ou-*'
+              - Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource:
+                  - !Sub 'arn:aws:iam::*:role/${RoleToAssume}'
+                Condition:
+                  StringEquals:
+                    'aws:PrincipalOrgId': !Ref OrganizationId
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*'
+              - Effect: Allow
+                Action:
+                  - 'kms:DescribeCustomKeyStores'
+                  - 'kms:ListKeys'
+                  - 'kms:DeleteCustomKeyStore'
+                  - 'kms:GenerateRandom'
+                  - 'kms:UpdateCustomKeyStore'
+                  - 'kms:ListAliases'
+                  - 'kms:DisconnectCustomKeyStore'
+                  - 'kms:CreateKey'
+                  - 'kms:ConnectCustomKeyStore'
+                  - 'kms:CreateCustomKeyStore'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'kms:*'
+                Resource:
+                  - !Sub 'arn:aws:kms:*:${AWS::AccountId}:alias/*'
+                  - !Sub 'arn:aws:kms:*:${AWS::AccountId}:key/*'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: 'Organizations does not have arns, so we have to use an asterisk in the policy'
+  SHRemediator:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - SHRemediatorRole
+    Properties:
+      FunctionName: SHRemediator
+      Handler: 'sh_remediator.lambda_handler'
+      Role: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${SHRemediatorRole}'
+      Code:
+        S3Bucket: !Ref S3SourceBucket
+        S3Key: !Ref S3SourceKey2
+      Runtime: python3.9
+      MemorySize: 512
+      Timeout: 900
+      Environment:
+        Variables:
+          log_level: INFO
+  SHRemediatorSMLauncherRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - 'lambda.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Path: '/'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AWSCloudFormationFullAccess'
+      Policies:
+        - PolicyName: SHRemediatorSMLauncherPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sts:AssumeRole'
+                Resource:
+                  - !Sub 'arn:aws:iam::*:role/${RoleToAssume}'
+                Condition:
+                  StringEquals:
+                    'aws:PrincipalOrgId': !Ref OrganizationId
+              - Effect: Allow
+                Action:
+                  - organizations:DescribeAccount
+                Resource:
+                  - !Sub 'arn:aws:organizations::${AWS::AccountId}:account/${OrganizationId}/*'
+              - Effect: Allow
+                Action:
+                  - 'states:DescribeStateMachineForExecution'
+                  - 'states:DescribeStateMachine'
+                  - 'states:UpdateStateMachine'
+                  - 'states:DeleteStateMachine'
+                  - 'states:StartExecution'
+                  - 'states:StopExecution'
+                  - 'states:StartSyncExecution'
+                Resource:
+                  - !Sub 'arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*'
+                  - !Sub 'arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:*:*'
+              - Effect: Allow
+                Action:
+                  - 'states:ListStateMachines'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*:log-stream:*'
+  SHRemediatorSMLauncher:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - SHRemediator
+      - SHRemediatorSMLauncherRole
+    Properties:
+      FunctionName: SHRemediatorSMLauncher
+      Handler: 'sh_remediator_sm_launcher.lambda_handler'
+      Role: !Sub arn:aws:iam::${AWS::AccountId}:role/${SHRemediatorSMLauncherRole}
+      Code:
+        S3Bucket: !Ref S3SourceBucket
+        S3Key: !Ref S3SourceKey3
+      Runtime: python3.9
+      MemorySize: 512
+      Timeout: 900
+      Environment:
+        Variables:
+          log_level: INFO
+          org_id: !Ref OrganizationId
+          assume_role: !Ref RoleToAssume
+          master_account: !Ref AWS::AccountId
+          home_region: !Ref HomeRegion
+          master_bucket: !Ref S3SourceBucket
+          sh_admin_account: !Ref SecurityAccountId
+          member_bucket: !Ref S3TargetBucket
+          cfn_template_name: !Ref RemediationTemplate
+          sm_name: !Ref StateMachine
+  SHRemediatorSMExecRole:
+    Type: AWS::IAM::Role
+    DependsOn:
+      - SHRemediator
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - 'states.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Path: '/'
+      Policies:
+        - PolicyName: SHRemediatorSMExecPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'lambda:InvokeFunction'
+                Resource:
+                  - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:SHOpsBucketCopier:*'
+                  - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:SHRemediator:*'
+              - Effect: Allow
+                Action:
+                  - 'lambda:InvokeFunction'
+                Resource:
+                  - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:SHOpsBucketCopier'
+                  - !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:SHRemediator'
+  SHRemediatorSM:
+    Type: AWS::StepFunctions::StateMachine
+    DependsOn:
+      - SHRemediatorSMExecRole
+    Properties:
+      StateMachineName: !Ref StateMachine
+      StateMachineType: 'STANDARD'
+      DefinitionS3Location:
+        Bucket: !Ref S3SourceBucket
+        Key: !Ref S3SourceKey4
+      RoleArn: !GetAtt SHRemediatorSMExecRole.Arn
+  SHEnablerEventDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: SHEnablerEventDLQ
+      Tags:
+        - Key: purpose
+          Value: Dead letter queue for SHEnablerEvents
+  SHEnablerEventRule:
+    Type: AWS::Events::Rule
+    DependsOn:
+      - SHRemediatorSMLauncher
+    Properties:
+      Name: EventRuleForSHRemediator
+      Description: SHEnabler Event Trigger for SHRemediator
+      EventBusName: !Ref EventBus
+      EventPattern:
+        source:
+          - 'org.SHEnablerEvent'
+        detail-type:
+          - 'SHEnablerSM Event'
+        detail:
+          EventName:
+            - 'SecurityHubEnabled'
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt SHRemediatorSMLauncher.Arn
+          Id: SHRemediator
+          DeadLetterConfig:
+            Arn: !GetAtt SHEnablerEventDLQ.Arn
+  PermissionToInvokeSHRemediator:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+      - SHEnablerEventRule
+    Properties:
+      FunctionName: !GetAtt SHRemediatorSMLauncher.Arn
+      Action: 'lambda:InvokeFunction'
+      Principal: 'events.amazonaws.com'
+      SourceArn: !GetAtt SHEnablerEventRule.Arn
+  DLQPolicy:
+    Type: AWS::SQS::QueuePolicy
+    DependsOn:
+      - SHEnablerEventDLQ
+      - SHEnablerEventRule
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'SQS:SendMessage'
+            Principal:
+              Service:
+                - 'events.amazonaws.com'
+            Resource:
+              - !GetAtt SHEnablerEventDLQ.Arn
+            Condition:
+              ArnEquals:
+                'aws:SourceArn': !GetAtt SHEnablerEventRule.Arn
+      Queues:
+        - !Ref SHEnablerEventDLQ
